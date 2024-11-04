@@ -6,8 +6,8 @@ env:
   DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
   DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
 
-  SSH_USERNAME: root
-  SSH_HOST: ansible.thixpin.me
+  SSH_USERNAME: ${{ vars.SSH_USERNAME }}
+  SSH_HOST: ${{ vars.SSH_HOST }}
   DOCKER_REPO: ${{ secrets.DOCKER_USERNAME }}/${{ vars.IMAGE_NAME }}
   VERSION: ${{ github.run_number }}
 
@@ -15,7 +15,7 @@ env:
   APP_PORT: 3001
   DOMAIN: ansible.thixpin.me
   WEB_MASTER_EMAIL: thixpin@gmail.com
-  SSL: false
+  SSL: true
 
 on:
   push:
@@ -43,8 +43,8 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: ${{ env.DOCKER_REPO }}:latest, ${{ env.DOCKER_REPO }}:${{ env.VERSION }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache
+          cache-from: type=registry,ref=${{ env.DOCKER_REPO }}:latest
+          cache-to: type=inline
   
   deploy:
     runs-on: ubuntu-latest
@@ -75,13 +75,12 @@ jobs:
       - name: Run Ansible playbook
         run: |
           ansible-playbook -i inventory \
-            --extra-vars "swap_size=1024 \
-                          docker_username=$DOCKER_USERNAME \
+            --extra-vars "docker_username=$DOCKER_USERNAME \
                           docker_token=$DOCKER_TOKEN \
                           docker_image=$DOCKER_REPO:$VERSION \
                           node_env=$NODE_ENV \
-                          app_port=$APP_PORT \
+                          port=$APP_PORT \
                           domain=$DOMAIN \
-                          web_master_email=$WEB_MASTER_EMAIL \
+                          email=$WEB_MASTER_EMAIL \
                           ssl=$SSL" \
-            devops/playbook.yaml
+            devops/playbook.yml

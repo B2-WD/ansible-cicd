@@ -1,14 +1,16 @@
+---
 - name: Deploy Next.js Docker container to Linux Server
   hosts: all
   become: true
   vars:
-    domain: "{{ domain | default('example.com') }}"
-    nginx_config_file: /etc/nginx/sites-available/{{ domain }}.conf
-    nginx_symlink: /etc/nginx/sites-enabled/{{ domain }}.conf
-    app_port: "{{ app_port | default('3000') }}"
-    swap_size: "{{ swap_size | default(1024) }}"
-    max_disk_percent: "{{ max_disk_percent | default('80') }}"
-    web_master_email: "{{ web_master_email | default('thixpin@gmail.com') }}"
+    swap_size: "{{ swap | default(1024) }}"
+    max_disk_percent: "{{ max_disk | default(1024) }}"
+    domain_name: "{{ domain | default('example.com') }}"
+    nginx_config_file: /etc/nginx/sites-available/{{ domain_name }}.conf
+    nginx_config_version: /etc/nginx/sites-available/{{ domain_name }}.ver
+    nginx_symlink: /etc/nginx/sites-enabled/{{ domain_name }}.conf
+    app_port: "{{ port | default(3000) }}"
+    web_master_email: "{{ email | default('thixpin@gmail.com') }}"
     current_swap_size: "{{ ansible_swaptotal_mb | default(0) }}"
 
   tasks:
@@ -23,15 +25,19 @@
         disc_usage_percent: "{{ (mount.size_total - mount.size_available) / mount.size_total * 100 }}"
 
     - name: Configure Swap
-      when: current_swap_size | int < swap_size - 8
+      when: (current_swap_size | int) < ((swap_size | int) - 8)
       include_role:
         name: geerlingguy.swap
       vars:
         swap_file_size_mb: "{{ swap_size }}"
 
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
     - name: Install Docker and Nginx
       apt:
-        name: docker.io
+        name: "{{ item }}"
         state: present
       loop:
         - nginx
@@ -41,7 +47,7 @@
 
     - name: Enable and start services
       systemd:
-        name: docker
+        name: "{{ item }}"
         enabled: true
         state: started
       loop:
@@ -52,7 +58,7 @@
       community.docker.docker_prune:
         images: true
         containers: true
-      when: disc_usage_percent | float > max_disk_percent
+      when: (disc_usage_percent | float) > (max_disk_percent | float)
 
     - name: Docker login
       community.docker.docker_login:
@@ -69,7 +75,7 @@
 
     - name: Run Docker container
       community.docker.docker_container:
-        name: "{{ domain }}"
+        name: "{{ domain_name }}"
         image: "{{ docker_image }}"
         image_name_mismatch: recreate
         state: started
@@ -90,28 +96,32 @@
     - name: Configure Nginx
       template:
         src: templates/nginx.conf.j2
-        dest: "{{ nginx_config_file }}"
+        dest: "{{ nginx_config_version }}"
         mode: "0644"
       notify:
+        - Update Nginx config
+        - Enable Nginx config
         - Restart Nginx
         - Install Certificates
 
-    - name: Create a symlink to Nginx config file
+  handlers:
+    - name: Update Nginx config
+      template:
+        src: templates/nginx.conf.j2
+        dest: "{{ nginx_config_file }}"
+        mode: "0644"
+
+    - name: Enable Nginx config
       file:
         src: "{{ nginx_config_file }}"
         dest: "{{ nginx_symlink }}"
         state: link
 
-  handlers:
     - name: Restart Nginx
       service:
         name: nginx
         state: reloaded
 
-    - name: Install SSL Certificates with Certbot
-      command: certbot certonly -a nginx --agree-tos --no-eff-email --email "{{ web_master_email }}" -d "{{ domain }}"
+    - name: Install Certificates
+      command: certbot --nginx --agree-tos --no-eff-email --email "{{ web_master_email }}" -d "{{ domain_name }}" --redirect --reinstall
       when: ssl_on
-      args:
-        creates: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
-      notify:
-        - Restart Nginx

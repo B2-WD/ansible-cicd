@@ -3,3 +3,5 @@ node_modules/
 README.md
 .git/
 .github/workflows/
+devops/playbook.*
+devops/templates/
