@@ -1,0 +1,117 @@
+- name: Deploy Next.js Docker container to Linux Server
+  hosts: all
+  become: true
+  vars:
+    domain: "{{ domain | default('example.com') }}"
+    nginx_config_file: /etc/nginx/sites-available/{{ domain }}.conf
+    nginx_symlink: /etc/nginx/sites-enabled/{{ domain }}.conf
+    app_port: "{{ app_port | default('3000') }}"
+    swap_size: "{{ swap_size | default(1024) }}"
+    max_disk_percent: "{{ max_disk_percent | default('80') }}"
+    web_master_email: "{{ web_master_email | default('thixpin@gmail.com') }}"
+    current_swap_size: "{{ ansible_swaptotal_mb | default(0) }}"
+
+  tasks:
+    - name: Set ssl_on, node_env, mount
+      set_fact:
+        ssl_on: "{{ ssl | default(false) | bool }}"
+        node_env: "{{ env | default('production') }}"
+        mount: "{{ ansible_mounts | first }}"
+
+    - name: Set disc_usage_percent
+      set_fact:
+        disc_usage_percent: "{{ (mount.size_total - mount.size_available) / mount.size_total * 100 }}"
+
+    - name: Configure Swap
+      when: current_swap_size | int < swap_size - 8
+      include_role:
+        name: geerlingguy.swap
+      vars:
+        swap_file_size_mb: "{{ swap_size }}"
+
+    - name: Install Docker and Nginx
+      apt:
+        name: docker.io
+        state: present
+      loop:
+        - nginx
+        - docker.io
+        - certbot
+        - python3-certbot-nginx
+
+    - name: Enable and start services
+      systemd:
+        name: docker
+        enabled: true
+        state: started
+      loop:
+        - docker
+        - nginx
+
+    - name: Docker system prune to free up disk space
+      community.docker.docker_prune:
+        images: true
+        containers: true
+      when: disc_usage_percent | float > max_disk_percent
+
+    - name: Docker login
+      community.docker.docker_login:
+        username: "{{ docker_username | default('') }}"
+        password: "{{ docker_token | default('') }}"
+        registry: "{{ docker_registry | default('https://index.docker.io/v1/') }}"
+        reauthorize: true
+      when: docker_token is defined and docker_token != ''
+
+    - name: Pull Docker image
+      community.docker.docker_image:
+        name: "{{ docker_image }}"
+        source: pull
+
+    - name: Run Docker container
+      community.docker.docker_container:
+        name: "{{ domain }}"
+        image: "{{ docker_image }}"
+        image_name_mismatch: recreate
+        state: started
+        restart_policy: always
+        ports:
+          - "{{ app_port }}:3000"
+        env:
+          NODE_ENV: "{{ node_env }}"
+          PORT: "3000"
+
+    - name: Wait for the container to start
+      wait_for:
+        host: localhost
+        port: "{{ app_port }}"
+        delay: 5
+        timeout: 60
+
+    - name: Configure Nginx
+      template:
+        src: templates/nginx.conf.j2
+        dest: "{{ nginx_config_file }}"
+        mode: "0644"
+      notify:
+        - Restart Nginx
+        - Install Certificates
+
+    - name: Create a symlink to Nginx config file
+      file:
+        src: "{{ nginx_config_file }}"
+        dest: "{{ nginx_symlink }}"
+        state: link
+
+  handlers:
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: reloaded
+
+    - name: Install SSL Certificates with Certbot
+      command: certbot certonly -a nginx --agree-tos --no-eff-email --email "{{ web_master_email }}" -d "{{ domain }}"
+      when: ssl_on
+      args:
+        creates: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
+      notify:
+        - Restart Nginx
